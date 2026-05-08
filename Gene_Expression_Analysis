@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/../config.sh"
+
+if [[ ! -f "${ANNOTATION_GFF}" ]]; then
+  echo "Annotation file not found: ${ANNOTATION_GFF}" >&2
+  exit 1
+fi
+
+featureCounts \
+  -a "${ANNOTATION_GFF}" \
+  -o "${COUNTS_DIR}/count_matrix.tsv" \
+  --largestOverlap \
+  -M \
+  --primary \
+  -T "${THREADS}" \
+  -g Parent \
+  "${BAM_DIR}"/*.sorted.bam \
+  > "${LOG_DIR}/featureCounts.log" 2>&1
+
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/../config.sh"
+
+input="${COUNTS_DIR}/count_matrix.tsv"
+output="${DESEQ2_DIR}/DESEQ2_matrix.tsv"
+
+# featureCounts output has annotation columns before sample count columns.
+# This keeps Geneid plus count columns and removes the first comment/header line.
+awk 'BEGIN{OFS="\t"} NR==2 {for (i=1; i<=NF; i++) if ($i ~ /Geneid/ || i >= 7) cols[i]=1} NR>=2 {first=1; for (i=1; i<=NF; i++) if (cols[i]) {printf "%s%s", (first?"":OFS), $i; first=0} printf "\n"}' "${input}" > "${output}"
+
+echo "Wrote DESeq2 matrix to ${output}"
+
+#!/usr/bin/env Rscript
+
+suppressPackageStartupMessages({
+  library(DESeq2)
+  library(geneplotter)
+})
+
+`%||%` <- function(x, y) if (is.null(x)) y else x
+script_path <- normalizePath(sys.frame(1)$ofile %||% "scripts/07_deseq2_analysis.R", mustWork = FALSE)
+project_dir <- normalizePath(file.path(dirname(script_path), ".."), mustWork = FALSE)
+args <- commandArgs(trailingOnly = TRUE)
+
+count_file <- ifelse(length(args) >= 1, args[1], file.path(project_dir, "results", "deseq2", "DESEQ2_matrix.tsv"))
+metadata_file <- ifelse(length(args) >= 2, args[2], file.path(project_dir, "metadata", "sample_metadata_template.csv"))
+out_dir <- ifelse(length(args) >= 3, args[3], file.path(project_dir, "results", "deseq2"))
+
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+sample_counts <- read.table(count_file, header = TRUE, row.names = 1, check.names = FALSE, sep = "\t")
+metadata <- read.csv(metadata_file, stringsAsFactors = TRUE)
+
+# Match metadata sample IDs to count matrix column names.
+# featureCounts may write full BAM paths as column names, so remove path and suffix.
+colnames(sample_counts) <- basename(colnames(sample_counts))
+colnames(sample_counts) <- sub("\\.sorted\\.bam$", "", colnames(sample_counts))
+
+metadata <- metadata[match(colnames(sample_counts), metadata$sample_id), ]
+if (any(is.na(metadata$sample_id))) {
+  stop("Some count matrix columns do not match sample_id values in metadata.")
+}
+rownames(metadata) <- metadata$sample_id
+
+metadata$ecotype <- relevel(factor(metadata$ecotype), ref = "dry")
+metadata$treatment <- factor(metadata$treatment)
+metadata$site <- factor(metadata$site)
+
+# Default model: dry vs wet ecotype.
+# Edit this formula for treatment, site, or interaction analyses, e.g. ~ site + ecotype + treatment.
+dds <- DESeqDataSetFromMatrix(
+  countData = round(as.matrix(sample_counts)),
+  colData = metadata,
+  design = ~ ecotype
+)
+
+# Remove genes with no counts across all samples.
+dds <- dds[rowSums(counts(dds)) > 0, ]
+
+# Normalization diagnostics.
+dds_sf <- estimateSizeFactors(dds)
+nonzero <- apply(counts(dds_sf), 1, function(x) all(x > 0))
+
+pdf(file.path(out_dir, "count_density_prenorm.pdf"))
+multiecdf(counts(dds_sf, normalized = FALSE)[nonzero, ], main = "ECDF pre-normalized", xlab = "count", ylab = "portion of genes", xlim = c(0, 1000))
+dev.off()
+
+pdf(file.path(out_dir, "count_density_postnorm.pdf"))
+multiecdf(counts(dds_sf, normalized = TRUE)[nonzero, ], main = "ECDF post-normalized", xlab = "count", ylab = "portion of genes", xlim = c(0, 1000))
+dev.off()
+
+pdf(file.path(out_dir, "multidensity_prenorm.pdf"))
+multidensity(counts(dds, normalized = FALSE)[nonzero, ], xlab = "mean counts", xlim = c(0, 1000))
+dev.off()
+
+pdf(file.path(out_dir, "multidensity_postnorm.pdf"))
+multidensity(counts(dds_sf, normalized = TRUE)[nonzero, ], xlab = "mean counts", xlim = c(0, 1000))
+dev.off()
+
+# Differential expression.
+dds <- DESeq(dds)
+res <- results(dds, alpha = 0.05)
+res_sorted <- res[order(res$padj), ]
+
+normalized_counts <- counts(dds, normalized = TRUE)
+output <- merge(
+  as.data.frame(res_sorted),
+  as.data.frame(normalized_counts),
+  by = "row.names",
+  sort = FALSE
+)
+colnames(output)[1] <- "gene_id"
+
+write.table(output, file = file.path(out_dir, "DESeq2_ecotype_wet_vs_dry.tsv"), row.names = FALSE, quote = FALSE, sep = "\t")
+writeLines(capture.output(sessionInfo()), con = file.path(out_dir, "R_sessionInfo.txt"))
+
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/../config.sh"
+
+PROJECT_ID="${1:-}"
+if [[ -z "${PROJECT_ID}" ]]; then
+  echo "Usage: bash scripts/00_download_fastq.sh <BaseSpace_project_id>"
+  exit 1
+fi
+
+bs auth
+bs download project --id "${PROJECT_ID}" --output "${RAW_FASTQ_DIR}"
+
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/../config.sh"
+
+# Trim paired-end FASTQ files listed in metadata.
+tail -n +2 "${METADATA}" | while IFS=, read -r sample_id fastq_r1 fastq_r2 site ecotype treatment replicate; do
+  r1="${RAW_FASTQ_DIR}/${fastq_r1}"
+  r2="${RAW_FASTQ_DIR}/${fastq_r2}"
+  out_r1="${TRIMMED_FASTQ_DIR}/${sample_id}_R1.fastp.fastq.gz"
+  out_r2="${TRIMMED_FASTQ_DIR}/${sample_id}_R2.fastp.fastq.gz"
+
+  if [[ ! -f "${r1}" || ! -f "${r2}" ]]; then
+    echo "Missing FASTQ files for ${sample_id}: ${r1} ${r2}" >&2
+    exit 1
+  fi
+
+  fastp \
+    --thread "${THREADS}" \
+    --in1 "${r1}" \
+    --in2 "${r2}" \
+    --out1 "${out_r1}" \
+    --out2 "${out_r2}" \
+    --qualified_quality_phred 20 \
+    --length_required 36 \
+    --html "${FASTP_OUT_DIR}/${sample_id}.fastp.html" \
+    --json "${FASTP_OUT_DIR}/${sample_id}.fastp.json" \
+    > "${LOG_DIR}/${sample_id}.fastp.log" 2>&1
+
+done
+
+fastqc --threads "${THREADS}" --outdir "${FASTP_OUT_DIR}" "${TRIMMED_FASTQ_DIR}"/*.fastq.gz
+
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/../config.sh"
+
+if [[ ! -f "${REFERENCE_FASTA}" ]]; then
+  echo "Reference FASTA not found: ${REFERENCE_FASTA}" >&2
+  exit 1
+fi
+
+hisat2-build -p "${THREADS}" "${REFERENCE_FASTA}" "${HISAT2_INDEX_PREFIX}" \
+  > "${LOG_DIR}/hisat2_build.log" 2>&1
+
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/../config.sh"
+
+tail -n +2 "${METADATA}" | while IFS=, read -r sample_id fastq_r1 fastq_r2 site ecotype treatment replicate; do
+  r1="${TRIMMED_FASTQ_DIR}/${sample_id}_R1.fastp.fastq.gz"
+  r2="${TRIMMED_FASTQ_DIR}/${sample_id}_R2.fastp.fastq.gz"
+  sam="${SAM_DIR}/${sample_id}.sam"
+
+  hisat2 \
+    -x "${HISAT2_INDEX_PREFIX}" \
+    --threads "${THREADS}" \
+    -1 "${r1}" \
+    -2 "${r2}" \
+    -S "${sam}" \
+    > "${LOG_DIR}/${sample_id}.hisat2.log" 2>&1
+
+done
+
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/../config.sh"
+
+for sam in "${SAM_DIR}"/*.sam; do
+  sample_id="$(basename "${sam}" .sam)"
+  bam="${BAM_DIR}/${sample_id}.sorted.bam"
+
+  samtools view -@ "${THREADS}" -u "${sam}" | \
+    samtools sort -@ "${THREADS}" -o "${bam}"
+
+  samtools index "${bam}"
+  samtools flagstat "${bam}" > "${FLAGSTAT_DIR}/${sample_id}.flagstat.txt"
+done
