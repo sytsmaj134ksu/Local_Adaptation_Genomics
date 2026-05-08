@@ -141,8 +141,4 @@ Citation
 
 If using these scripts or data, please cite:
 
-Sytsma J., Galliart M., Fogarty K., Howe K., Olson B.J.S.C., Baer S.G., Gibson D.J., Maricle B., Hartung E., and Johnson L.C.
-
-“Taking genomics outdoors: linking local adaptation, trait variation, and gene expression in grass ecotypes across a rainfall gradient.” (2026)
-
-Molecular Ecology.
+Sytsma J., Galliart M., Fogarty K., Howe K., Olson B.J.S.C., Baer S.G., Gibson D.J., Maricle B., Hartung E., and Johnson L.C. Taking genomics outdoors: linking local adaptation, trait variation, and gene expression in grass ecotypes across a rainfall gradient. (2026). Molecular Ecology.
