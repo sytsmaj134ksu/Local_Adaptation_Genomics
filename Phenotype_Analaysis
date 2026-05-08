@@ -1,0 +1,249 @@
+/* 
+Cover, Biomass, and Trait Analyses
+Andropogon gerardi reciprocal garden experiment
+
+Analyses:
+1. Plot-level cover and biomass
+2. Functional trait models
+3. Tukey HSD post hoc comparisons
+4. PCA of functional traits
+
+Model structure follows manuscript:
+Fixed effects: Site, Ecotype, Treatment, and interactions
+Random effects: Block and repeated quadrat/plant observations
+*/
+
+Names Default To Here(1);
+
+/* -----------------------------
+   1. Import data
+----------------------------- */
+
+cover_biomass = Open("data/cover_biomass_data.csv");
+traits = Open("data/trait_data.csv");
+
+/* Expected columns for cover_biomass_data.csv:
+   Year, Site, Ecotype, Treatment, Block, Plot, Quadrat, Cover, Biomass
+*/
+
+/* Expected columns for trait_data.csv:
+   Year, Season, Site, Ecotype, Treatment, Block, Plot, PlantID,
+   SPAD, Photosynthesis, StomatalConductance, Transpiration,
+   WUE, LeafWidth, SeedBiomass, TotalBiomass, CanopyDiameter,
+   LeafThickness, LeafNitrogen, LeafCarbon, InternalCO2,
+   BoltingJD, FloweringJD, Height
+*/
+
+
+/* -----------------------------
+   2. Cover analysis
+----------------------------- */
+
+cover_biomass << Fit Model(
+	Y(:Cover),
+	Effects(
+		:Site,
+		:Ecotype,
+		:Treatment,
+		:Site * :Ecotype,
+		:Site * :Treatment,
+		:Ecotype * :Treatment,
+		:Site * :Ecotype * :Treatment
+	),
+	Random Effects(:Block, :Plot, :Quadrat),
+	Personality("Standard Least Squares"),
+	Emphasis("Effect Leverage"),
+	Run(
+		:Cover << {Summary of Fit(1), Analysis of Variance(1), Parameter Estimates(1)}
+	)
+);
+
+cover_biomass << Oneway(
+	Y(:Cover),
+	X(:Ecotype),
+	Each Pair(1),
+	All Pairs(1),
+	Comparison Circles(1),
+	Means and Std Dev(1)
+);
+
+
+/* -----------------------------
+   3. Biomass analysis
+----------------------------- */
+
+cover_biomass << Fit Model(
+	Y(:Biomass),
+	Effects(
+		:Site,
+		:Ecotype,
+		:Treatment,
+		:Site * :Ecotype,
+		:Site * :Treatment,
+		:Ecotype * :Treatment,
+		:Site * :Ecotype * :Treatment
+	),
+	Random Effects(:Block, :Plot, :Quadrat),
+	Personality("Standard Least Squares"),
+	Emphasis("Effect Leverage"),
+	Run(
+		:Biomass << {Summary of Fit(1), Analysis of Variance(1), Parameter Estimates(1)}
+	)
+);
+
+cover_biomass << Oneway(
+	Y(:Biomass),
+	X(:Ecotype),
+	Each Pair(1),
+	All Pairs(1),
+	Comparison Circles(1),
+	Means and Std Dev(1)
+);
+
+
+/* -----------------------------
+   4. Functional trait analyses
+----------------------------- */
+
+trait_list = {
+	"SPAD",
+	"Photosynthesis",
+	"StomatalConductance",
+	"Transpiration",
+	"WUE",
+	"LeafWidth",
+	"SeedBiomass",
+	"TotalBiomass",
+	"CanopyDiameter",
+	"LeafThickness",
+	"LeafNitrogen",
+	"LeafCarbon",
+	"InternalCO2",
+	"BoltingJD",
+	"FloweringJD",
+	"Height"
+};
+
+For(i = 1, i <= N Items(trait_list), i++,
+
+	trait_col = Column(traits, trait_list[i]);
+
+	traits << Fit Model(
+		Y(trait_col),
+		Effects(
+			:Site,
+			:Ecotype,
+			:Treatment,
+			:Site * :Ecotype,
+			:Site * :Treatment,
+			:Ecotype * :Treatment,
+			:Site * :Ecotype * :Treatment
+		),
+		Random Effects(:Block, :Plot, :PlantID),
+		Personality("Standard Least Squares"),
+		Emphasis("Effect Leverage"),
+		Run(
+			trait_col << {Summary of Fit(1), Analysis of Variance(1), Parameter Estimates(1)}
+		)
+	);
+
+	traits << Oneway(
+		Y(trait_col),
+		X(:Ecotype),
+		Each Pair(1),
+		All Pairs(1),
+		Comparison Circles(1),
+		Means and Std Dev(1)
+	);
+);
+
+
+/* -----------------------------
+   5. PCA of functional traits
+----------------------------- */
+
+traits << Principal Components(
+	Y(
+		:SPAD,
+		:Photosynthesis,
+		:StomatalConductance,
+		:Transpiration,
+		:WUE,
+		:LeafWidth,
+		:SeedBiomass,
+		:TotalBiomass,
+		:CanopyDiameter,
+		:LeafThickness,
+		:LeafNitrogen,
+		:LeafCarbon,
+		:InternalCO2,
+		:BoltingJD,
+		:FloweringJD,
+		:Height
+	),
+	Estimation Method("Default"),
+	"on Correlations",
+	Eigenvalues(1),
+	Eigenvectors(1),
+	Score Plot(1),
+	Loading Plot(1),
+	Biplot(1)
+);
+
+
+/* -----------------------------
+   6. Optional: subset PCA by treatment
+----------------------------- */
+
+traits << Select Where(:Treatment == "Ambient");
+ambient_traits = traits << Subset(Output Table("traits_ambient"), Selected Rows(1));
+
+ambient_traits << Principal Components(
+	Y(
+		:SPAD,
+		:Photosynthesis,
+		:StomatalConductance,
+		:Transpiration,
+		:WUE,
+		:LeafWidth,
+		:SeedBiomass,
+		:TotalBiomass,
+		:CanopyDiameter,
+		:LeafThickness,
+		:LeafNitrogen,
+		:LeafCarbon,
+		:InternalCO2,
+		:BoltingJD,
+		:FloweringJD,
+		:Height
+	),
+	"on Correlations",
+	Biplot(1)
+);
+
+traits << Clear Select;
+traits << Select Where(:Treatment == "Rainout");
+rainout_traits = traits << Subset(Output Table("traits_rainout"), Selected Rows(1));
+
+rainout_traits << Principal Components(
+	Y(
+		:SPAD,
+		:Photosynthesis,
+		:StomatalConductance,
+		:Transpiration,
+		:WUE,
+		:LeafWidth,
+		:SeedBiomass,
+		:TotalBiomass,
+		:CanopyDiameter,
+		:LeafThickness,
+		:LeafNitrogen,
+		:LeafCarbon,
+		:InternalCO2,
+		:BoltingJD,
+		:FloweringJD,
+		:Height
+	),
+	"on Correlations",
+	Biplot(1)
+);
